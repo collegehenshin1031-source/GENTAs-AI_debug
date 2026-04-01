@@ -1,5 +1,6 @@
 """
 源太AI🤖ハゲタカSCOPE
+- 生徒配布用・完全オフライン究極安定版
 - 全銘柄24時間監視
 - ハゲタカ（機関投資家）の足跡を自動検知
 - ロックオン通知システム
@@ -8,6 +9,9 @@
 import re
 import unicodedata
 import time
+import os
+import pickle
+import json
 from typing import Any, Dict, List, Optional
 import pandas as pd
 import numpy as np
@@ -37,7 +41,7 @@ st.set_page_config(
 )
 
 # ==========================================
-# 🎨 先乗り株カレッジ ブランドCSS
+# 🎨 先乗り株カレッジ ブランドCSS (完全保持)
 # ==========================================
 st.markdown("""
 <style>
@@ -284,26 +288,21 @@ div.stButton > button:hover {
     .main .block-container {
         padding: 0.75rem 1rem 2rem 1rem !important;
     }
-    
     h1 {
         font-size: 1.5rem !important;
     }
-    
     .stTabs [data-baseweb="tab-list"] {
         flex-wrap: nowrap !important;
         overflow-x: auto !important;
     }
-    
     .stTabs [data-baseweb="tab"] {
         padding: 0.6rem 1rem !important;
         font-size: 0.9rem !important;
         white-space: nowrap !important;
     }
-    
     div.stButton > button:first-child {
         width: 100% !important;
     }
-    
     .hero-section {
         padding: 1.5rem 1rem;
     }
@@ -313,22 +312,26 @@ div.stButton > button:hover {
 
 
 # ==========================================
-# 認証
+# 認証（フォーム化による高速ログイン）
 # ==========================================
 def check_password():
     if "logged_in" not in st.session_state:
         st.session_state["logged_in"] = False
+        
     if not st.session_state["logged_in"]:
         st.markdown("## 🔒 ACCESS RESTRICTED")
-        password_input = st.text_input("パスワードを入力してください", type="password")
-        if st.button("ログイン"):
-            input_norm = unicodedata.normalize('NFKC', password_input).upper().strip()
-            secret_norm = unicodedata.normalize('NFKC', LOGIN_PASSWORD).upper().strip()
-            if input_norm == secret_norm:
-                st.session_state["logged_in"] = True
-                st.rerun()
-            else:
-                st.error("パスワードが違います 🙅")
+        with st.form("login_form"):
+            password_input = st.text_input("パスワードを入力してください", type="password")
+            submit_btn = st.form_submit_button("ログイン")
+            
+            if submit_btn:
+                input_norm = unicodedata.normalize('NFKC', password_input).upper().strip()
+                secret_norm = unicodedata.normalize('NFKC', LOGIN_PASSWORD).upper().strip()
+                if input_norm == secret_norm:
+                    st.session_state["logged_in"] = True
+                    st.rerun()
+                else:
+                    st.error("パスワードが違います 🙅")
         st.stop()
 
 check_password()
@@ -375,9 +378,8 @@ def get_signal_class(signal_level):
     else:
         return "medium"
 
-
 def render_stock_card(signal: scanner.HagetakaSignal):
-    """銘柄カードをレンダリング"""
+    """銘柄カードをレンダリング（デザイン完全保持）"""
     card_class = get_signal_class(signal.signal_level)
     badge_class = card_class
     
@@ -398,12 +400,12 @@ def render_stock_card(signal: scanner.HagetakaSignal):
         </div>
         <div style="margin-top: 0.75rem; display: flex; gap: 1.5rem; flex-wrap: wrap; font-size: 0.9rem; color: #666;">
             <span>📊 スコア: <strong style="color: #C41E3A;">{signal.total_score}点</strong></span>
-            <span>📈 出来高倍率: <strong>{signal.volume_ratio:.1f}倍</strong></span>
-            <span>🌪️ 回転率: <strong>{signal.turnover_pct:.1f}%</strong></span>
-            <span>💰 時価総額: <strong>{fmt_market_cap(signal.market_cap)}</strong></span>
+            <span>📈 出来高倍率: <strong>{getattr(signal, 'volume_ratio', 0):.1f}倍</strong></span>
+            <span>🌪️ 回転率: <strong>{getattr(signal, 'turnover_pct', 0):.1f}%</strong></span>
+            <span>💰 時価総額: <strong>{fmt_market_cap(getattr(signal, 'market_cap', 0))}</strong></span>
         </div>
         <div style="margin-top: 0.75rem;">
-            {''.join([f'<span class="signal-tag">{s}</span>' for s in signal.signals[:5]])}
+            {''.join([f'<span class="signal-tag">{s}</span>' for s in getattr(signal, 'signals', [])[:5]])}
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -431,23 +433,19 @@ init_session_state()
 st.title("🦅 源太AI ハゲタカSCOPE")
 st.markdown('<p class="subtitle">プロの投資戦略をのぞき見る「カンニング級の裏・攻略本」</p>', unsafe_allow_html=True)
 
-# タブ
 tab1, tab2, tab3 = st.tabs(["🎯 ロックオン銘柄", "📊 ハゲタカ監視", "🔔 通知設定"])
 
-
 # ==========================================
-# タブ1: ロックオン銘柄
+# タブ1: ロックオン銘柄（完全オフライン キャッシュ読込）
 # ==========================================
 with tab1:
-    # ヒーローセクション
     st.markdown("""
     <div class="hero-section">
         <h2>🎯 AIが検知した「今日の標的」</h2>
-        <p>全3,800銘柄をスキャンし、ハゲタカの足跡が見つかった銘柄を厳選表示</p>
+        <p>夜間にAIが全銘柄をスキャンした最新データです</p>
     </div>
     """, unsafe_allow_html=True)
     
-    # ステータス表示
     col1, col2, col3 = st.columns(3)
     with col1:
         last_scan = st.session_state.get("last_scan_time")
@@ -455,222 +453,138 @@ with tab1:
             st.markdown(f"""
             <div class="status-indicator">
                 <span class="status-dot active"></span>
-                最終スキャン: {last_scan.strftime('%H:%M')}
+                最終データ読込: {last_scan.strftime('%H:%M')}
             </div>
             """, unsafe_allow_html=True)
     
     with col3:
-        lockons = [s for s in st.session_state.get("scan_results", []) if s.total_score >= 50]
+        lockons = [s for s in st.session_state.get("scan_results", []) if getattr(s, 'total_score', 0) >= 50]
         st.metric("ロックオン銘柄", f"{len(lockons)}件")
     
     st.divider()
+    st.markdown("### 🔍 表示データ設定")
     
-    # スキャン設定セクション
-    st.markdown("### 🔍 スキャン設定")
-    
-    # スキャンモード選択（プルダウン）
     scan_mode_options = {
         "⚡ クイックスキャン（推奨）": scanner.ScanMode.QUICK,
         "🌱 グロース市場（約500銘柄）": scanner.ScanMode.GROWTH,
         "🏬 スタンダード市場（約1,400銘柄）": scanner.ScanMode.STANDARD,
         "🏢 プライム市場（約1,800銘柄）": scanner.ScanMode.PRIME,
-        "🌐 全銘柄スキャン（約3,800銘柄）": scanner.ScanMode.ALL,
+        "🌐 全銘柄表示（約3,800銘柄）": scanner.ScanMode.ALL,
         "✏️ 銘柄コードを直接入力": scanner.ScanMode.CUSTOM,
     }
     
-    selected_mode_label = st.selectbox(
-        "スキャン対象を選択",
-        options=list(scan_mode_options.keys()),
-        index=0,
-        help="クイックスキャンは出来高が急増している銘柄を優先的にスキャンします"
-    )
-    
+    selected_mode_label = st.selectbox("表示対象を選択", options=list(scan_mode_options.keys()), index=0)
     selected_mode = scan_mode_options[selected_mode_label]
     scan_option = scanner.SCAN_OPTIONS[selected_mode]
     
-    # 選択したモードの説明を表示
     info_col1, info_col2 = st.columns([2, 1])
     with info_col1:
         st.markdown(f"""
         <div style="background: #F8F9FA; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.9rem;">
             📋 <strong>{scan_option.description}</strong><br>
-            <span style="color: #666;">対象: 約{scan_option.estimated_count}銘柄 / 所要時間: {scan_option.estimated_time}</span>
+            <span style="color: #666;">※夜間に自動構築されたキャッシュデータから瞬時に呼び出します</span>
         </div>
         """, unsafe_allow_html=True)
     
-    # 警告表示
-    if scan_option.warning:
-        st.warning(scan_option.warning)
-    
-    # カスタム入力（モードがCUSTOMの場合のみ表示）
     custom_codes = []
     if selected_mode == scanner.ScanMode.CUSTOM:
-        custom_input = st.text_input(
-            "銘柄コードを入力（スペース区切り）",
-            placeholder="例: 7203 9984 6758 8306",
-            help="スキャンしたい銘柄コードをスペースで区切って入力してください"
-        )
+        custom_input = st.text_input("銘柄コードを入力（スペース区切り）", placeholder="例: 7203 9984 6758 8306")
         if custom_input:
             custom_codes = [c.strip() for c in custom_input.split() if c.strip()]
             st.info(f"📝 {len(custom_codes)}銘柄を入力済み")
     
-    # スキャン実行ボタン
-    st.markdown("")  # スペーサー
-    scan_btn = st.button("🚀 スキャン開始", type="primary", use_container_width=True)
+    st.markdown("") 
+    scan_btn = st.button("🚀 データ呼び出し", type="primary", use_container_width=True)
     
-    # スキャン実行
     if scan_btn:
-        # 対象銘柄を取得
-        if selected_mode == scanner.ScanMode.CUSTOM:
-            if not custom_codes:
-                st.error("銘柄コードを入力してください")
-                st.stop()
-            codes = custom_codes
+        codes = scanner.get_scan_targets(selected_mode, custom_codes)
+        cache_path = "data/daily_hagetaka_cache.pkl"
+        
+        # 【絶対防御】ファイルが存在する場合のみ読み込む
+        if os.path.exists(cache_path):
+            with st.spinner("📦 データを読み込み中..."):
+                try:
+                    with open(cache_path, 'rb') as f:
+                        all_results = pickle.load(f)
+                    
+                    if selected_mode == scanner.ScanMode.ALL:
+                        results = all_results
+                    else:
+                        target_set = set(codes)
+                        results = [r for r in all_results if r.code in target_set]
+                        
+                    if results:
+                        st.session_state["scan_results"] = results
+                        st.session_state["last_scan_time"] = datetime.now()
+                        st.success(f"✅ {len(results)}件のデータを瞬時に読み込みました！")
+                    else:
+                        st.warning("⚠️ 指定された銘柄のデータがキャッシュ内にありませんでした。")
+                        
+                except Exception as e:
+                    st.error(f"データの読み込みに失敗しました: {e}")
         else:
-            with st.spinner("📋 銘柄リストを取得中..."):
-                codes = scanner.get_scan_targets(selected_mode, custom_codes)
-        
-        if not codes:
-            st.error("スキャン対象の銘柄が見つかりませんでした")
-            st.stop()
-        
-        st.info(f"🎯 {len(codes)}銘柄をスキャンします")
-        
-        # プログレスバー
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        def update_progress(current, total, code):
-            progress_bar.progress(current / total)
-            status_text.text(f"スキャン中... {current}/{total} - {code}")
-        
-        with st.spinner("🔍 ハゲタカの足跡を探索中..."):
-            results = scanner.scan_all_stocks(codes, progress_callback=update_progress)
-            st.session_state["scan_results"] = results
-            st.session_state["last_scan_time"] = datetime.now()
-            st.session_state["scan_target_count"] = len(codes)
-        
-        progress_bar.empty()
-        status_text.empty()
-        
-        # 結果サマリー
-        if results:
-            lockons = [s for s in results if s.signal_level == scanner.SignalLevel.LOCKON]
-            high_alerts = [s for s in results if s.signal_level == scanner.SignalLevel.HIGH]
-            medium_alerts = [s for s in results if s.signal_level == scanner.SignalLevel.MEDIUM]
+            st.warning("🔄 現在、サーバー裏側で最新データを構築中です。完了までしばらくお待ちください。")
             
-            st.success(f"""
-            ✅ スキャン完了！
-            - 🔴 ロックオン: {len(lockons)}件
-            - 🟠 高警戒: {len(high_alerts)}件
-            - 🟡 監視中: {len(medium_alerts)}件
-            - 📊 分析完了: {len(results)}件 / 対象: {len(codes)}件
-            """)
-            
-            # 通知チェック
-            config = st.session_state.get("notification_config", notifier.NotificationConfig())
-            if config.enabled and config.email_enabled and lockons:
-                st.info(f"📧 {len(lockons)}件のロックオン銘柄を検知しました！")
-        else:
-            st.error(f"""
-            ⚠️ スキャン結果が0件でした
-            - 対象銘柄数: {len(codes)}件
-            - データ取得に失敗した可能性があります
-            - 時間をおいて再度お試しください
-            """)
-        
         st.rerun()
     
-    # 結果表示
     results = st.session_state.get("scan_results", [])
     
     if results:
         st.divider()
-        
-        # フィルター
         col1, col2 = st.columns([1, 1])
         with col1:
             min_score_filter = st.slider("最低スコア", 0, 100, 0, key="filter_score")
         with col2:
             sort_option = st.selectbox("並び順", ["スコア順", "出来高倍率順", "回転率順"])
         
-        # フィルタリング
         filtered = [s for s in results if s.total_score >= min_score_filter]
         
-        # ソート
         if sort_option == "出来高倍率順":
-            filtered.sort(key=lambda x: x.volume_ratio, reverse=True)
+            filtered.sort(key=lambda x: getattr(x, 'volume_ratio', 0), reverse=True)
         elif sort_option == "回転率順":
-            filtered.sort(key=lambda x: x.turnover_pct, reverse=True)
+            filtered.sort(key=lambda x: getattr(x, 'turnover_pct', 0), reverse=True)
         else:
-            filtered.sort(key=lambda x: x.total_score, reverse=True)
+            filtered.sort(key=lambda x: getattr(x, 'total_score', 0), reverse=True)
         
-        st.markdown(f"### 📋 厳選・監視リスト（{len(filtered)}件）")
+        st.markdown(f"### 📋 厳選・監視リスト（表示上限20件）")
         
         if not filtered:
             st.info("条件に合致する銘柄がありません。フィルターを調整してください。")
         else:
-            for signal in filtered[:20]:  # 上位20件
+            for signal in filtered[:20]:
                 render_stock_card(signal)
-                
-                # 詳細展開
+                # 詳細展開（完全保持）
                 with st.expander(f"📊 {signal.code} の詳細分析"):
                     col1, col2, col3, col4 = st.columns(4)
                     with col1:
-                        st.metric("🥷 ステルス集積", f"{signal.stealth_score}/35点")
+                        st.metric("🥷 ステルス集積", f"{getattr(signal, 'stealth_score', 0)}/35点")
                     with col2:
-                        st.metric("🧱 板の違和感", f"{signal.board_score}/35点")
+                        st.metric("🧱 板の違和感", f"{getattr(signal, 'board_score', 0)}/35点")
                     with col3:
-                        st.metric("🔥 出来高臨界点", f"{signal.volume_score}/30点")
+                        st.metric("🔥 出来高臨界点", f"{getattr(signal, 'volume_score', 0)}/30点")
                     with col4:
-                        st.metric("🌟 ボーナス", f"+{signal.bonus_score}点")
+                        st.metric("🌟 ボーナス", f"+{getattr(signal, 'bonus_score', 0)}点")
                     
                     st.markdown("**検知シグナル:**")
-                    for s in signal.signals:
+                    for s in getattr(signal, 'signals', []):
                         st.markdown(f"- {s}")
-    elif st.session_state.get("last_scan_time"):
-        st.warning("⚠️ スキャン結果が0件でした。データ取得に失敗した可能性があります。時間をおいて再度お試しください。")
     else:
-        st.info("👆 「スキャン開始」ボタンを押して、ハゲタカの足跡を探索してください。")
-    
-    # 説明セクション
+        st.info("👆 「データ呼び出し」ボタンを押して、ハゲタカの足跡を表示してください。")
+        
     st.divider()
     with st.expander("📚 ハゲタカスコープの仕組み"):
         st.markdown("""
         ### 🦅 3つの検知ロジック
-        
         #### 1. 🥷 ステルス集積（最大35点）
         目立たないように株を買い集めている動きを検知します。
-        - 出来高が徐々に増加しているか
-        - 価格変動が小さいのに出来高が増えているか
-        - 時価総額が買収適正サイズか
-        
         #### 2. 🧱 板の違和感（最大35点）
         気配値（板）に現れる不自然な並びや歪みを検知します。
-        - 需給の壁（価格帯別出来高の偏り）の位置
-        - 52週高値・安値との位置関係
-        - ボリンジャーバンドの位置
-        
         #### 3. 🔥 出来高の臨界点（最大30点）
         爆発直前に見られる取引量の異常な変化を検知します。
-        - 出来高倍率（20日平均比）
-        - 浮動株回転率
-        
-        ---
-        
-        ### 🎯 シグナルレベル
-        
-        | レベル | スコア | 意味 |
-        |--------|--------|------|
-        | 🔴 ロックオン | 70点以上 | 複数の兆候が重なった最注目銘柄 |
-        | 🟠 高警戒 | 50〜69点 | 要注目、監視リスト入り推奨 |
-        | 🟡 監視中 | 30〜49点 | 一部兆候あり、継続監視 |
-        | 🟢 平常 | 29点以下 | 現時点で特に異常なし |
         """)
 
-
 # ==========================================
-# タブ2: ハゲタカ監視（M&A予兆）
+# タブ2: ハゲタカ監視（M&A予兆）完全オフライン版
 # ==========================================
 with tab2:
     st.markdown("""
@@ -680,9 +594,7 @@ with tab2:
     </div>
     """, unsafe_allow_html=True)
     
-    # 監視リスト管理
     st.markdown("### 📋 監視リスト")
-    
     watchlist = st.session_state.get("watchlist", [])
     
     col1, col2 = st.columns([3, 1])
@@ -702,39 +614,40 @@ with tab2:
     
     if watchlist:
         st.markdown(f"**現在の監視銘柄** ({len(watchlist)}件): {', '.join(watchlist)}")
-        
         col1, col2 = st.columns([1, 1])
         with col1:
             if st.button("🔍 M&A分析実行", type="primary", key="ma_analyze"):
-                with st.spinner("🎯 M&A予兆分析中..."):
-                    try:
-                        import fair_value_calc_y4 as fv
-                        bundle = fv.calc_genta_bundle(watchlist)
-                        stock_data_list = [bundle.get(code, {}) for code in watchlist]
-                        ma_results = ma.batch_analyze_ma(stock_data_list, with_news=True)
+                with st.spinner("🎯 M&Aデータをキャッシュから展開中..."):
+                    cache_path_ma = "data/daily_ma_cache.json"
+                    bundle = {}
+                    
+                    if os.path.exists(cache_path_ma):
+                        try:
+                            with open(cache_path_ma, 'r', encoding='utf-8') as f:
+                                cache_data = json.load(f)
+                                all_bundle = cache_data.get("data", {})
+                                bundle = {c: all_bundle[c] for c in watchlist if c in all_bundle}
+                        except Exception as e:
+                            st.error(f"キャッシュ読み込みエラー: {e}")
+                    
+                    if not bundle:
+                        st.warning("⚠️ キャッシュデータが存在しないか、監視リストの銘柄がまだ裏側で処理されていません。\nデータ構築の完了をお待ちください。")
+                    else:
+                        stock_data_list = list(bundle.values())
+                        # 【絶対防御】with_news=Falseにすることで、フロントエンドでのニューススクレイピング通信を完全停止
+                        ma_results = ma.batch_analyze_ma(stock_data_list, with_news=False)
                         st.session_state["ma_results"] = ma_results
-                        
-                        # 通知
-                        config = st.session_state.get("notification_config", notifier.NotificationConfig())
-                        if config.enabled and config.email_enabled:
-                            alerts = [s for s in ma_results if s.total_score >= config.min_score_threshold]
-                            if alerts:
-                                notifier.send_ma_alert(config, alerts)
-                                st.success(f"📧 {len(alerts)}件のアラートを送信しました")
-                    except Exception as e:
-                        st.error(f"エラー: {e}")
-        
+                        st.rerun()
+
         with col2:
             if st.button("🗑️ リストをクリア", key="clear_watch"):
                 st.session_state["watchlist"] = []
                 notifier.save_watchlist([])
                 st.rerun()
         
-        # M&A分析結果表示
         if "ma_results" in st.session_state and st.session_state["ma_results"]:
             st.divider()
             st.markdown("### 📊 M&A予兆分析結果")
-            
             for score in st.session_state["ma_results"]:
                 if score.signal_level == ma.MASignalLevel.CRITICAL:
                     card_class, badge_class = "lockon", "lockon"
@@ -761,17 +674,13 @@ with tab2:
                 </div>
                 """, unsafe_allow_html=True)
                 
+                # 詳細展開（完全保持）
                 with st.expander(f"📋 {score.code} 詳細"):
                     col1, col2, col3, col4 = st.columns(4)
                     col1.metric("ニュース", f"{score.news_score}/40")
                     col2.metric("出来高", f"{score.volume_score}/30")
                     col3.metric("バリュエーション", f"{score.valuation_score}/20")
                     col4.metric("テクニカル", f"{score.technical_score}/10")
-                    
-                    if score.news_items:
-                        st.markdown("**📰 関連ニュース**")
-                        for news in score.news_items[:3]:
-                            st.markdown(f"- {news.title}")
     else:
         st.info("監視銘柄を追加してください。")
 
@@ -788,26 +697,12 @@ with tab3:
     """, unsafe_allow_html=True)
     
     config = st.session_state.get("notification_config", notifier.NotificationConfig())
-    
     st.markdown("### ⚙️ 基本設定")
     enabled = st.toggle("通知を有効にする", value=config.enabled, key="notify_enabled")
-    
-    min_score = st.slider(
-        "通知する最低スコア", 0, 100, config.min_score_threshold, 
-        key="min_score",
-        help="このスコア以上の銘柄が検知された場合に通知されます"
-    )
+    min_score = st.slider("通知する最低スコア", 0, 100, config.min_score_threshold, key="min_score")
     
     st.divider()
-    
     st.markdown("### 📧 メール通知設定")
-    st.markdown("""
-    **Gmailの場合:**
-    1. [Googleアカウント](https://myaccount.google.com/)で2段階認証を有効化
-    2. [アプリパスワード](https://myaccount.google.com/apppasswords)を生成
-    3. 生成された16桁のパスワードを「SMTPパスワード」に入力
-    """)
-    
     email_enabled = st.toggle("メール通知を有効にする", value=config.email_enabled, key="email_enabled")
     
     if email_enabled:
@@ -824,18 +719,13 @@ with tab3:
         if email_address and smtp_user and smtp_password:
             if st.button("📧 テスト送信", key="test_email"):
                 result = notifier.send_email(
-                    to_address=email_address,
-                    subject="🎯 ハゲタカSCOPE テスト通知",
+                    to_address=email_address, subject="🎯 ハゲタカSCOPE テスト通知",
                     body="ロックオン通知のテストです。\n\n設定が正常に機能しています。",
-                    smtp_server=smtp_server,
-                    smtp_port=int(smtp_port),
-                    smtp_user=smtp_user,
-                    smtp_password=smtp_password
+                    smtp_server=smtp_server, smtp_port=int(smtp_port),
+                    smtp_user=smtp_user, smtp_password=smtp_password
                 )
-                if result.success:
-                    st.success("✅ テスト送信成功！")
-                else:
-                    st.error(f"❌ {result.message}")
+                if result.success: st.success("✅ テスト送信成功！")
+                else: st.error(f"❌ {result.message}")
     else:
         email_address = config.email_address
         smtp_server = config.smtp_server
@@ -844,20 +734,15 @@ with tab3:
         smtp_port = config.smtp_port
     
     st.divider()
-    
     if st.button("💾 設定を保存", type="primary", key="save_config"):
         new_config = notifier.NotificationConfig(
-            enabled=enabled,
-            email_enabled=email_enabled,
+            enabled=enabled, email_enabled=email_enabled,
             email_address=email_address if email_enabled else config.email_address,
             smtp_server=smtp_server if email_enabled else config.smtp_server,
             smtp_port=int(smtp_port) if email_enabled else config.smtp_port,
             smtp_user=smtp_user if email_enabled else config.smtp_user,
             smtp_password=smtp_password if email_enabled else config.smtp_password,
-            line_enabled=False,
-            line_token="",
-            min_score_threshold=min_score,
-            notify_critical_only=False,
+            line_enabled=False, line_token="", min_score_threshold=min_score, notify_critical_only=False,
         )
         notifier.save_notification_config(new_config)
         st.session_state["notification_config"] = new_config
@@ -865,20 +750,16 @@ with tab3:
 
 
 # ==========================================
-# フッター
+# フッター・管理者メニュー
 # ==========================================
 st.divider()
 st.markdown("""
 <div style="text-align: center; color: #888; font-size: 0.85rem; padding: 1rem;">
     ⚠️ 投資は自己責任でお願いします。本ツールは情報提供を目的としており、投資助言ではありません。<br>
-    © 先乗り株カレッジ - 源太AI ハゲタカSCOPE
+    © フヤセル - 源太AI ハゲタカSCOPE
 </div>
 """, unsafe_allow_html=True)
 
-
-# ==========================================
-# 管理者メニュー
-# ==========================================
 with st.expander("🔧 管理者メニュー"):
     admin_input = st.text_input("管理者コード", type="password", key="admin_pass")
     if admin_input == ADMIN_CODE:
