@@ -610,14 +610,6 @@ def scan_all_stocks(
 ) -> List[HagetakaSignal]:
     """
     全銘柄をスキャンしてハゲタカシグナルを検知
-    
-    Args:
-        codes: スキャン対象の銘柄コードリスト
-        progress_callback: 進捗コールバック関数
-        use_gate: ゲート条件を使用するか
-    
-    Returns:
-        検知されたシグナルのリスト（スコア順）
     """
     signals = []
     total = len(codes)
