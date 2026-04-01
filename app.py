@@ -291,17 +291,23 @@ div.stButton > button:hover {
 def check_password():
     if "logged_in" not in st.session_state:
         st.session_state["logged_in"] = False
+        
     if not st.session_state["logged_in"]:
         st.markdown("## 🔒 ACCESS RESTRICTED")
-        password_input = st.text_input("パスワードを入力してください", type="password")
-        if st.button("ログイン"):
-            input_norm = unicodedata.normalize('NFKC', password_input).upper().strip()
-            secret_norm = unicodedata.normalize('NFKC', LOGIN_PASSWORD).upper().strip()
-            if input_norm == secret_norm:
-                st.session_state["logged_in"] = True
-                st.rerun()
-            else:
-                st.error("パスワードが違います 🙅")
+        
+        # st.formを使用して入力をグループ化し、無駄な再実行を防止
+        with st.form("login_form"):
+            password_input = st.text_input("パスワードを入力してください", type="password")
+            submit_btn = st.form_submit_button("ログイン")
+            
+            if submit_btn:
+                input_norm = unicodedata.normalize('NFKC', password_input).upper().strip()
+                secret_norm = unicodedata.normalize('NFKC', LOGIN_PASSWORD).upper().strip()
+                if input_norm == secret_norm:
+                    st.session_state["logged_in"] = True
+                    st.rerun()
+                else:
+                    st.error("パスワードが違います 🙅")
         st.stop()
 
 check_password()
@@ -462,7 +468,6 @@ with tab1:
             cache_path = "data/daily_hagetaka_cache.pkl"
             
             # 【究極のハイブリッド処理】
-            # もし「全銘柄」かつ「完成ファイルが存在する」なら、0秒で爆速読み込み
             if selected_mode == scanner.ScanMode.ALL and os.path.exists(cache_path):
                 try:
                     with open(cache_path, 'rb') as f:
@@ -471,19 +476,15 @@ with tab1:
                     status_text.text("✅ 最新の完成データを読み込みました（待ち時間ゼロ）")
                     st.success("📦 裏側で完成していた4000銘柄の最新データを一瞬で読み込みました！")
                 except Exception as e:
-                    # 万が一読み込みエラーなら、サーバーを守るため強制的に30銘柄に絞ってリアルタイム取得
                     safe_codes = codes[:30]
                     st.warning("⚠️ データの読み込みに失敗しました。サーバー保護のため、主要30銘柄のみをスキャンします。")
                     results = scanner.scan_all_stocks(safe_codes, progress_callback=update_progress)
             else:
-                # 完成ファイルが「まだ無い」場合、または「全銘柄以外」の場合
                 if selected_mode == scanner.ScanMode.ALL:
-                    # 全銘柄をリアルタイムで取りに行くとサーバーが落ちるので、強制的に50銘柄に絞る（応急処置）
                     safe_codes = codes[:50]
                     st.warning("⚠️ 現在、裏側で約4000銘柄のデータを構築中です（あと1〜2時間で完了予定）。\nサーバーダウンを防ぐため、完了までは一時的に【主要50銘柄】のみを高速スキャンします。")
                     results = scanner.scan_all_stocks(safe_codes, progress_callback=update_progress)
                 else:
-                    # クイックやカスタムなど少数の場合は通常通り取得（ただし上限100件の安全装置）
                     safe_codes = codes[:100]
                     results = scanner.scan_all_stocks(safe_codes, progress_callback=update_progress)
 
@@ -545,7 +546,6 @@ with tab2:
                         cache_path_ma = "data/daily_ma_cache.json"
                         bundle = {}
                         
-                        # 【M&Aタブのハイブリッド処理】キャッシュがあれば優先使用
                         if os.path.exists(cache_path_ma):
                             try:
                                 with open(cache_path_ma, 'r', encoding='utf-8') as f:
@@ -556,7 +556,6 @@ with tab2:
                             except:
                                 pass
                         
-                        # キャッシュに無かった銘柄だけリアルタイム取得（上限20件の安全装置付き）
                         missing_codes = [c for c in watchlist if c not in bundle][:20]
                         if missing_codes:
                             live_bundle = fv.calc_genta_bundle(missing_codes)
