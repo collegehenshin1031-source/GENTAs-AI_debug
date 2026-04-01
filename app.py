@@ -291,17 +291,22 @@ div.stButton > button:hover {
 def check_password():
     if "logged_in" not in st.session_state:
         st.session_state["logged_in"] = False
+        
     if not st.session_state["logged_in"]:
         st.markdown("## 🔒 ACCESS RESTRICTED")
-        password_input = st.text_input("パスワードを入力してください", type="password")
-        if st.button("ログイン"):
-            input_norm = unicodedata.normalize('NFKC', password_input).upper().strip()
-            secret_norm = unicodedata.normalize('NFKC', LOGIN_PASSWORD).upper().strip()
-            if input_norm == secret_norm:
-                st.session_state["logged_in"] = True
-                st.rerun()
-            else:
-                st.error("パスワードが違います 🙅")
+        
+        with st.form("login_form"):
+            password_input = st.text_input("パスワードを入力してください", type="password")
+            submit_btn = st.form_submit_button("ログイン")
+            
+            if submit_btn:
+                input_norm = unicodedata.normalize('NFKC', password_input).upper().strip()
+                secret_norm = unicodedata.normalize('NFKC', LOGIN_PASSWORD).upper().strip()
+                if input_norm == secret_norm:
+                    st.session_state["logged_in"] = True
+                    st.rerun()
+                else:
+                    st.error("パスワードが違います 🙅")
         st.stop()
 
 check_password()
@@ -326,7 +331,7 @@ def fmt_pct(x):
 def fmt_market_cap(x):
     if x is None or pd.isna(x) or x == 0: return "—"
     try:
-        v = float(x) / 1e8  # 億円換算
+        v = float(x) / 1e8
         if v >= 10000: return f"{v/10000:.1f}兆円"
         return f"{v:.0f}億円"
     except: return "—"
@@ -406,7 +411,7 @@ with tab1:
             st.markdown(f"""
             <div class="status-indicator">
                 <span class="status-dot active"></span>
-                最終スキャン: {last_scan.strftime('%H:%M')}
+                最終データ更新: {last_scan.strftime('%H:%M')}
             </div>
             """, unsafe_allow_html=True)
     
@@ -415,7 +420,7 @@ with tab1:
         st.metric("ロックオン銘柄", f"{len(lockons)}件")
     
     st.divider()
-    st.markdown("### 🔍 スキャン設定")
+    st.markdown("### 🔍 表示データ設定")
     
     scan_mode_options = {
         "⚡ クイックスキャン（推奨）": scanner.ScanMode.QUICK,
@@ -426,14 +431,14 @@ with tab1:
         "✏️ 銘柄コードを直接入力": scanner.ScanMode.CUSTOM,
     }
     
-    selected_mode_label = st.selectbox("スキャン対象を選択", options=list(scan_mode_options.keys()), index=0)
+    selected_mode_label = st.selectbox("表示対象を選択", options=list(scan_mode_options.keys()), index=0)
     selected_mode = scan_mode_options[selected_mode_label]
     scan_option = scanner.SCAN_OPTIONS[selected_mode]
     
     st.markdown(f"""
     <div style="background: #F8F9FA; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.9rem; margin-bottom: 1rem;">
         📋 <strong>{scan_option.description}</strong><br>
-        <span style="color: #666;">対象: 約{scan_option.estimated_count}銘柄 / 所要時間: 瞬時（キャッシュ読込）</span>
+        <span style="color: #666;">※夜間に自動構築されたキャッシュデータから瞬時に呼び出します</span>
     </div>
     """, unsafe_allow_html=True)
     
@@ -443,23 +448,20 @@ with tab1:
         if custom_input:
             custom_codes = [c.strip() for c in custom_input.split() if c.strip()]
             
-    scan_btn = st.button("🚀 スキャン開始", type="primary", use_container_width=True)
+    scan_btn = st.button("🚀 データ呼び出し", type="primary", use_container_width=True)
     
-    # 【改修】通信を完全に切断し、キャッシュ読み込み専用に変更
     if scan_btn:
         codes = scanner.get_scan_targets(selected_mode, custom_codes)
-        if not codes:
-            st.error("スキャン対象の銘柄が見つかりませんでした")
-            st.stop()
+        cache_path = "data/daily_hagetaka_cache.pkl"
         
-        with st.spinner("📦 データを読み込み中..."):
-            cache_path = "data/daily_hagetaka_cache.pkl"
-            
-            if os.path.exists(cache_path):
+        # 【完全API分離ロジック】キャッシュがある場合のみ読み込む。絶対にライブ取得はしない。
+        if os.path.exists(cache_path):
+            with st.spinner("📦 キャッシュデータを読み込み中..."):
                 try:
                     with open(cache_path, 'rb') as f:
                         all_results = pickle.load(f)
                     
+                    # モードに合わせてフィルタリング
                     if selected_mode == scanner.ScanMode.ALL:
                         results = all_results
                     else:
@@ -475,9 +477,9 @@ with tab1:
                         
                 except Exception as e:
                     st.error(f"データの読み込みに失敗しました: {e}")
-            else:
-                st.warning("🔄 現在、サーバー裏側で最新データを構築中です。完了までしばらくお待ちください。")
-                
+        else:
+            st.warning("⚠️ 現在、サーバー裏側のバッチ処理でデータを構築中です。\nデータ完成までしばらくお待ちください（※API制限回避のためゆっくり実行されています）。")
+            
         st.rerun()
     
     # 結果表示
@@ -488,7 +490,7 @@ with tab1:
         for signal in results[:20]:
             render_stock_card(signal)
     else:
-        st.info("👆 「スキャン開始」ボタンを押して探索してください。")
+        st.info("👆 「データ呼び出し」ボタンを押して結果を表示してください。")
 
 # ==========================================
 # タブ2: ハゲタカ監視（M&A予兆）
@@ -522,28 +524,28 @@ with tab2:
         col1, col2 = st.columns([1, 1])
         with col1:
             if st.button("🔍 M&A分析実行", type="primary", key="ma_analyze"):
-                # 【改修】通信を完全に切断し、キャッシュ読み込み専用に変更
                 with st.spinner("🎯 M&Aデータをキャッシュから展開中..."):
-                    try:
-                        cache_path_ma = "data/daily_ma_cache.json"
-                        bundle = {}
-                        
-                        if os.path.exists(cache_path_ma):
+                    cache_path_ma = "data/daily_ma_cache.json"
+                    bundle = {}
+                    
+                    # 【完全API分離ロジック】キャッシュのみを参照する
+                    if os.path.exists(cache_path_ma):
+                        try:
                             with open(cache_path_ma, 'r', encoding='utf-8') as f:
                                 cache_data = json.load(f)
                                 all_bundle = cache_data.get("data", {})
                                 bundle = {c: all_bundle[c] for c in watchlist if c in all_bundle}
-                                
-                        if not bundle:
-                            st.warning("⚠️ キャッシュデータが存在しないか、監視リストの銘柄がまだ裏側で処理されていません。データ構築の完了をお待ちください。")
-                        else:
-                            stock_data_list = list(bundle.values())
-                            # 通信完全遮断のため with_news=False
-                            ma_results = ma.batch_analyze_ma(stock_data_list, with_news=False)
-                            st.session_state["ma_results"] = ma_results
-                            st.rerun()
-                    except Exception as e:
-                        st.error(f"エラー: {e}")
+                        except Exception as e:
+                            st.error(f"キャッシュ読み込みエラー: {e}")
+                    
+                    if not bundle:
+                        st.warning("⚠️ キャッシュデータが存在しないか、監視リストの銘柄がまだ裏側で処理されていません。\nバッチ処理の完了をお待ちください。")
+                    else:
+                        stock_data_list = list(bundle.values())
+                        ma_results = ma.batch_analyze_ma(stock_data_list, with_news=True)
+                        st.session_state["ma_results"] = ma_results
+                        st.rerun()
+
         with col2:
             if st.button("🗑️ リストをクリア", key="clear_watch"):
                 st.session_state["watchlist"] = []
