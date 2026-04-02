@@ -11,6 +11,7 @@ import io
 import os
 from typing import Optional, Tuple
 from datetime import datetime, timedelta
+from collections import defaultdict
 
 import pandas as pd
 import requests
@@ -130,6 +131,99 @@ def _clean_numeric(df: pd.DataFrame) -> pd.DataFrame:
 # ==========================================
 def fetch_stock_prices(user_id: str, password: str) -> pd.DataFrame:
     return _fetch_csv(PRICES_URL, user_id, password, PRICE_COLUMNS)
+
+
+def fetch_stock_prices_for_date(date_str: str, user_id: str, password: str) -> pd.DataFrame:
+    """指定日の株価CSVを取得。date_str は YYYYMMDD。"""
+    auth = HTTPBasicAuth(user_id, password)
+    url = PRICES_URL.format(date=date_str)
+    try:
+        resp = requests.get(url, auth=auth, timeout=60)
+        if resp.status_code != 200:
+            return pd.DataFrame()
+        text = resp.content.decode("shift-jis", errors="replace")
+        df = pd.read_csv(io.StringIO(text))
+        if df is None or df.empty or len(df) < 100:
+            return pd.DataFrame()
+        rename = {k: v for k, v in PRICE_COLUMNS.items() if k in df.columns}
+        df = df.rename(columns=rename)
+        if "code" in df.columns:
+            df["code"] = df["code"].astype(str).str.strip()
+        df = _clean_numeric(df)
+        if "timestamp" not in df.columns:
+            df["timestamp"] = date_str
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def fetch_stock_prices_range(user_id: str, password: str, days_back: int = 400, min_rows: int = 30) -> pd.DataFrame:
+    """
+    過去複数日分のKABU+日次株価CSVを横断取得して結合する。
+    営業日判定はHTTP 200かつ十分な行数があるかで行う。
+    """
+    frames = []
+    seen_dates = set()
+    now = datetime.now()
+    for offset in range(days_back):
+        target = now - timedelta(days=offset)
+        date_str = target.strftime('%Y%m%d')
+        if date_str in seen_dates:
+            continue
+        seen_dates.add(date_str)
+        df = fetch_stock_prices_for_date(date_str, user_id, password)
+        if df.empty or len(df) < min_rows:
+            continue
+        if 'timestamp' not in df.columns:
+            df['timestamp'] = date_str
+        frames.append(df)
+    if not frames:
+        return pd.DataFrame()
+    merged = pd.concat(frames, ignore_index=True)
+    if 'timestamp' in merged.columns:
+        merged['timestamp'] = merged['timestamp'].astype(str).str.replace('/', '-', regex=False)
+    merged = merged.drop_duplicates(subset=['code', 'timestamp'], keep='last')
+    return merged
+
+
+def build_history_lookup(price_history_df: pd.DataFrame, min_bars: int = 5) -> dict:
+    """
+    KABU+の複数日株価CSVから {ticker: OHLCV履歴} 辞書を構築する。
+    app.py の stock_history.json と同じ形式を返す。
+    """
+    lookup: dict = {}
+    if price_history_df is None or price_history_df.empty:
+        return lookup
+
+    df = price_history_df.copy()
+    required = ['code', 'timestamp', 'open', 'high', 'low', 'price', 'volume']
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        return lookup
+
+    df['code'] = df['code'].astype(str).str.strip()
+    df['Date'] = pd.to_datetime(df['timestamp'], errors='coerce')
+    df = df.dropna(subset=['Date'])
+
+    for col in ['open', 'high', 'low', 'price', 'volume']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    df = df.dropna(subset=['open', 'high', 'low', 'price'])
+    df['volume'] = df['volume'].fillna(0)
+
+    for code, g in df.groupby('code', sort=False):
+        g = g.sort_values('Date').drop_duplicates(subset=['Date'], keep='last')
+        if len(g) < min_bars:
+            continue
+        ticker = f"{code}.T"
+        lookup[ticker] = {
+            'dates': [d.strftime('%Y-%m-%d') for d in g['Date']],
+            'O': [round(float(v), 1) for v in g['open']],
+            'H': [round(float(v), 1) for v in g['high']],
+            'L': [round(float(v), 1) for v in g['low']],
+            'C': [round(float(v), 1) for v in g['price']],
+            'V': [int(float(v)) for v in g['volume']],
+        }
+    return lookup
 
 
 def fetch_stock_indicators(user_id: str, password: str) -> pd.DataFrame:
