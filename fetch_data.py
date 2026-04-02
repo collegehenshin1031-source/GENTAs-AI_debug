@@ -210,6 +210,11 @@ MARKET_CAP_MAX = 2000
 FLOW_SCORE_HIGH = 70.0
 FLOW_SCORE_MEDIUM = 40.0
 
+# 監視対象ユニバース設定
+TARGET_UNIVERSE_SIZE = int(os.environ.get("TARGET_UNIVERSE_SIZE", "1200"))
+ALLOW_YFINANCE_FALLBACK = os.environ.get("ALLOW_YFINANCE_FALLBACK", "0").strip() in ("1", "true", "True")
+
+
 # ==========================================
 # 日本語銘柄名辞書（固定リスト）
 # ==========================================
@@ -1252,8 +1257,9 @@ def get_all_listed_tickers_jpx() -> list[str]:
 
 def build_universe_tickers() -> list[str]:
     """
-    FULL_UNIVERSE=1（デフォルト）: JPX 全銘柄 ∪ 固定辞書の和集合。
-    FULL_UNIVERSE=0: 従来どおり MIDCAP_TICKERS のみ（ローカル短時間テスト用）。
+    後方互換用。KABU+ ベースのユニバースが作れない場合のみ使う。
+    FULL_UNIVERSE=1: JPX 全銘柄 ∪ 固定辞書の和集合
+    FULL_UNIVERSE=0: MIDCAP_TICKERS のみ
     """
     if os.environ.get("FULL_UNIVERSE", "0").strip() not in ("1", "true", "True"):
         return list(MIDCAP_TICKERS)
@@ -1264,6 +1270,94 @@ def build_universe_tickers() -> list[str]:
     return merged
 
 
+def build_target_universe_from_merged(merged_df: pd.DataFrame, target_size: int = TARGET_UNIVERSE_SIZE) -> list[str]:
+    """
+    KABU+ の当日指標データから、監視対象ユニバースを構築する。
+    基本方針:
+    - 時価総額 300億〜2000億円を優先
+    - target_size を上限目安に採用
+    - まずは純粋に時価総額帯で絞り、件数が多い場合は時価総額降順で切る
+    """
+    if merged_df is None or merged_df.empty or 'code' not in merged_df.columns:
+        return []
+
+    df = merged_df.copy()
+    if 'market_cap_m' not in df.columns:
+        return []
+
+    df['market_cap_m'] = pd.to_numeric(df['market_cap_m'], errors='coerce')
+    df = df.dropna(subset=['market_cap_m'])
+    if df.empty:
+        return []
+
+    df['market_cap_oku'] = df['market_cap_m'] / 100.0
+    df['code'] = df['code'].astype(str).str.strip()
+    df = df[df['code'] != '']
+
+    # ETF / REIT / インデックス系の明らかな非対象を軽く除外
+    for col in ['market', 'industry', 'name']:
+        if col not in df.columns:
+            df[col] = ''
+        df[col] = df[col].astype(str)
+    exclude_pattern = r'ETF|ETN|REIT|投資信託|インフラ'
+    mask_ex = df['market'].str.contains(exclude_pattern, case=False, na=False) | df['industry'].str.contains(exclude_pattern, case=False, na=False) | df['name'].str.contains(exclude_pattern, case=False, na=False)
+    df = df[~mask_ex]
+
+    primary = df[(df['market_cap_oku'] >= MARKET_CAP_MIN) & (df['market_cap_oku'] <= MARKET_CAP_MAX)].copy()
+    primary = primary.sort_values(['market_cap_oku', 'code'], ascending=[False, True])
+
+    # 同一 code 重複除去
+    primary = primary.drop_duplicates(subset=['code'], keep='first')
+    codes = [f"{c}.T" for c in primary['code'].astype(str).tolist()]
+
+    if target_size > 0:
+        codes = codes[:target_size]
+
+    return sorted(set(codes))
+
+
+
+
+def load_existing_ratios_results() -> tuple[dict, dict]:
+    """既存の ratios.json から results / qualified を読み込む。再取得フェーズ用。"""
+    p = Path("data/ratios.json")
+    if not p.exists():
+        return {}, {}
+    try:
+        obj = json.loads(p.read_text(encoding="utf-8"))
+        all_data = obj.get("all_data", {}) or {}
+        data = obj.get("data", {}) or {}
+        return all_data, data
+    except Exception as e:
+        print(f"⚠️ 既存 ratios.json 読み込み失敗: {e}")
+        return {}, {}
+
+
+def load_existing_history_shards() -> tuple[dict, list[dict]]:
+    """既存の data/history を読み込み、stock_history / shards を再構築する。再取得フェーズ用。"""
+    stock_history = {}
+    shards = [{} for _ in range(HISTORY_SHARD_COUNT)]
+    if not HISTORY_DIR.exists():
+        return stock_history, shards
+
+    for i in range(HISTORY_SHARD_COUNT):
+        fp = HISTORY_DIR / f"shard_{i:02d}.json"
+        if not fp.exists():
+            continue
+        try:
+            bucket = json.loads(fp.read_text(encoding="utf-8"))
+            if isinstance(bucket, dict):
+                shards[i] = bucket
+                stock_history.update(bucket)
+        except Exception as e:
+            print(f"⚠️ 既存 shard 読み込み失敗 {fp.name}: {e}")
+    return stock_history, shards
+
+
+def merge_results_preserving_new(existing: dict, new: dict) -> dict:
+    merged = dict(existing or {})
+    merged.update(new or {})
+    return merged
 def write_history_shards(shards: list[dict], updated_at: str) -> None:
     """data/history/shard_XX.json と meta.json を書き出す"""
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
@@ -1530,7 +1624,7 @@ def determine_level(ma_score: float) -> int:
 
 def fetch_volume_data(
     tickers: list[str],
-    chunk_size: int = 10,
+    chunk_size: int = 50,
     kabuplus_info: dict | None = None,
     kabuplus_history: dict | None = None,
 ) -> tuple[dict, dict, dict, list]:
@@ -1691,6 +1785,9 @@ def fetch_volume_data(
 
                 ratio_value = round(vol_ratio, 2)
 
+                level = 3 if (flow_score >= FLOW_SCORE_HIGH or ratio_value >= 3.0) else (2 if flow_score >= FLOW_SCORE_MEDIUM else 1)
+                ma_score = combined_score
+
                 result = {
                     'ticker': ticker,
                     'name': name,
@@ -1703,6 +1800,9 @@ def fetch_volume_data(
                     'reorg_score': round(reorg_score, 1),
                     'event_score': round(event_score, 1),
                     'combined_score': combined_score,
+                    'ma_score': combined_score,
+                    'level': level,
+                    'in_cap_range': bool(in_range),
                     'shares_outstanding': int(shares_outstanding) if shares_outstanding else None,
                     'shares_outstanding_is_estimated': bool(shares_outstanding_is_estimated),
                     'display_state': display_state,
@@ -1728,62 +1828,131 @@ def main():
     updated_at = now_jst.strftime("%Y-%m-%d %H:%M:%S")
 
     JPX_NAME_MAP = get_jpx_data()
-    universe = build_universe_tickers()
 
     print("=" * 60)
     print("🦅 HAGETAKA SCOPE - 日次候補抽出")
     print("=" * 60)
     print(f"⏰ 実行時刻: {updated_at} JST")
-    print(f"🎯 対象: 時価総額 {MARKET_CAP_MIN}億〜{MARKET_CAP_MAX}億円（候補フィルタ）")
-    print(f"📋 スキャン銘柄数: {len(universe)} （FULL_UNIVERSE={os.environ.get('FULL_UNIVERSE', '0')}）")
+    print(f"🎯 対象: 時価総額 {MARKET_CAP_MIN}億〜{MARKET_CAP_MAX}億円（候補フィルタ / 監視対象は約{TARGET_UNIVERSE_SIZE}銘柄目標）")
 
-    # ★ KABU+ から全銘柄の指標データを一括取得（1-2秒）
     kabuplus_info = {}
+    kabuplus_history = {}
+    merged = pd.DataFrame()
+
     try:
-        import kabuplus_client as kp
         kp_id, kp_pw = kp.get_credentials()
         if kp_id and kp_pw:
-            print("📡 KABU+ からデータ一括取得中...")
+            print("📡 KABU+ から当日指標データを一括取得中...")
             merged = kp.fetch_merged_data(kp_id, kp_pw)
             if not merged.empty:
                 kabuplus_info = kp.build_info_lookup(merged)
-                print(f"  → KABU+ {len(kabuplus_info)}銘柄の指標データ取得完了")
-            else:
-                print("  ⚠️ KABU+ データ取得失敗（休日の可能性）→ yfinance フォールバック")
-        else:
-            print("  ⚠️ KABU+ 認証情報なし → yfinance フォールバック")
-    except Exception as e:
-        print(f"  ⚠️ KABU+ エラー: {e} → yfinance フォールバック")
+                print(f"  → KABU+ 指標データ {len(kabuplus_info)} 銘柄")
 
-    results, qualified, stock_history, shards = fetch_volume_data(universe, kabuplus_info=kabuplus_info)
+            print("📚 KABU+ からOHLCV履歴を一括取得中...")
+            price_history_df = kp.fetch_stock_prices_range(kp_id, kp_pw, days_back=400, min_rows=30)
+            if not price_history_df.empty:
+                kabuplus_history = kp.build_history_lookup(price_history_df, min_bars=30)
+                print(f"  → KABU+ 履歴データ {len(kabuplus_history)} 銘柄")
+            else:
+                print("  ⚠️ KABU+ 履歴データ取得失敗")
+        else:
+            print("  ⚠️ KABU+ 認証情報なし")
+    except Exception as e:
+        print(f"  ⚠️ KABU+ エラー: {e}")
+
+    retry_missing_only = os.environ.get("RETRY_MISSING_ONLY", "0").strip() in ("1", "true", "True")
+    existing_results, existing_qualified = ({}, {})
+    existing_history, existing_shards = ({}, [{} for _ in range(HISTORY_SHARD_COUNT)])
+
+    universe = build_target_universe_from_merged(merged, TARGET_UNIVERSE_SIZE)
+    if not universe:
+        print("⚠️ KABU+ から監視対象ユニバースを構築できなかったため、既存方式へフォールバックします。")
+        universe = build_universe_tickers()
+
+    # KABU+ 履歴が存在する銘柄だけに寄せる
+    if kabuplus_history:
+        universe = [t for t in universe if t in kabuplus_history]
+
+    if retry_missing_only:
+        miss_path = Path("data/missing_universe.json")
+        if miss_path.exists():
+            try:
+                miss_obj = json.loads(miss_path.read_text(encoding="utf-8"))
+                retry_universe = miss_obj.get("tickers", []) or []
+                retry_universe = [t for t in retry_universe if (not kabuplus_history) or t in kabuplus_history]
+                if retry_universe:
+                    print(f"♻️ 再取得フェーズ: 未取得 {len(retry_universe)} 銘柄のみ再実行")
+                    universe = retry_universe
+                    existing_results, existing_qualified = load_existing_ratios_results()
+                    existing_history, existing_shards = load_existing_history_shards()
+                else:
+                    print("♻️ 再取得フェーズ: 未取得銘柄がないため通常ユニバースを使用")
+            except Exception as e:
+                print(f"⚠️ missing_universe 読み込み失敗: {e}")
+
+    print(f"📋 スキャン銘柄数: {len(universe)}")
+
+    results, qualified, stock_history, shards = fetch_volume_data(
+        universe,
+        kabuplus_info=kabuplus_info,
+        kabuplus_history=kabuplus_history,
+    )
+
+    if retry_missing_only and existing_results:
+        results = merge_results_preserving_new(existing_results, results)
+        qualified = merge_results_preserving_new(existing_qualified, qualified)
+        stock_history = merge_results_preserving_new(existing_history, stock_history)
+        merged_shards = existing_shards
+        for i, bucket in enumerate(shards):
+            if bucket:
+                merged_shards[i].update(bucket)
+        shards = merged_shards
 
     filtered = {k: v for k, v in results.items() if v.get("in_cap_range")}
-    # 並び：LEVEL→MAScore→FlowScore
     sorted_qualified = dict(sorted(qualified.items(), key=lambda x: (int(x[1].get("level",0)), float(x[1].get("ma_score",0)), float(x[1].get("flow_score",0))), reverse=True))
     sorted_filtered = dict(sorted(filtered.items(), key=lambda x: (int(x[1].get("level",0)), float(x[1].get("ma_score",0)), float(x[1].get("flow_score",0))), reverse=True))
 
     level_counts = {}
-    for r in sorted_qualified.values():
+    notification_candidates = {}
+    for t, r in sorted_qualified.items():
         lv = int(r.get("level", 0))
         level_counts[lv] = level_counts.get(lv, 0) + 1
+        if lv >= 3 or float(r.get("flow_score", 0)) >= FLOW_SCORE_HIGH:
+            notification_candidates[t] = r
+
+    if retry_missing_only:
+        base_universe = build_target_universe_from_merged(merged, TARGET_UNIVERSE_SIZE)
+        if kabuplus_history:
+            base_universe = [t for t in base_universe if t in kabuplus_history]
+        if not base_universe:
+            base_universe = build_universe_tickers()
+        missing_universe = sorted(set(base_universe) - set(results.keys()))
+    else:
+        missing_universe = sorted(set(universe) - set(results.keys()))
 
     output = {
         "updated_at": updated_at,
         "date": now_jst.strftime("%Y-%m-%d"),
         "market_cap_range": f"{MARKET_CAP_MIN}億〜{MARKET_CAP_MAX}億円",
+        "target_universe_size": len(universe),
+        "notification_candidate_count": len(notification_candidates),
         "total_count": len(sorted_qualified),
         "all_count": len(results),
         "filtered_count": len(filtered),
         "level_counts": level_counts,
         "data": sorted_qualified,
         "all_data": sorted_filtered,
+        "notification_candidates": notification_candidates,
+        "missing_universe": missing_universe,
+        "run_mode": "retry_missing_only" if retry_missing_only else "full_scan",
         "disclaimer": "本ツールは市場データの可視化を目的とした補助ツールです。銘柄推奨・売買助言ではありません。",
     }
 
     os.makedirs("data", exist_ok=True)
     Path("data/ratios.json").write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path("data/missing_universe.json").write_text(json.dumps({"updated_at": updated_at, "tickers": missing_universe}, ensure_ascii=False, indent=2), encoding="utf-8")
     print("💾 保存完了: data/ratios.json")
-    print(f"🎯 候補: {len(sorted_qualified)} 件 / フィルタ通過: {len(filtered)} 件")
+    print(f"🎯 候補: {len(sorted_qualified)} 件 / 通知候補: {len(notification_candidates)} 件 / 未取得: {len(missing_universe)} 件")
 
     write_history_shards(shards, updated_at)
 
